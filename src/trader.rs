@@ -8,7 +8,7 @@ use penumbra_crypto::{
     dex::{
         lp::{
             position::{self, Position},
-            Reserves,
+            BuyOrder, Reserves, SellOrder,
         },
         DirectedUnitPair,
     },
@@ -352,37 +352,61 @@ where
 
         // a 1_000scaling factor is applied to keep some of the decimal
         // TODO: this is bad lol
-        let mut scaling_factor = 1_000.0;
-        let mut mid_price = scaling_factor * (best_ask + best_bid) / 2.0;
+        // let mut scaling_factor = 1_000.0;
+        let scaling_factor = 1.0;
+        let mut mid_price = (best_ask + best_bid) / 2.0;
+        // let mut mid_price = scaling_factor * (best_ask + best_bid) / 2.0;
 
         // apply more scaling factor if necessary
-        while mid_price < 1.0 {
-            scaling_factor *= 1_000.0;
-            mid_price *= 1_000.0;
-        }
+        // while mid_price < 1.0 {
+        //     scaling_factor *= 1_000.0;
+        //     mid_price *= 1_000.0;
+        // }
 
         // Calculate spread:
         let difference = scaling_factor * (best_ask - best_bid).abs();
         let fraction = difference / mid_price;
         // max of 50% fee
-        let spread = (fraction * 100.0 * 100.0).clamp(0.0, 5000.0);
+        // min of 1% fee
+        let spread = (fraction * 100.0 * 100.0).clamp(100.0, 5000.0);
 
-        let numer_scaler = market.start.unit_amount().value();
-        let denom_scaler = market.end.unit_amount().value();
+        let asset1_scaler = market.start.unit_amount().value();
+        let asset2_scaler = market.end.unit_amount().value();
 
-        let pos = Position::new(
-            OsRng,
-            market.into_directed_trading_pair(),
-            spread as u32,
-            // p is always the scaling value
-            (scaling_factor as u128 * denom_scaler).into(),
-            // price is expressed in units of asset 2
-            (mid_price as u128 * numer_scaler).into(),
-            reserves,
+        // Place two sell-side orders, one selling asset 1 and one selling
+        // asset 2 (since we can't place reserves on both sides in this API).
+        let sell_order1 = format!(
+            "{}{}@{}{}/{}bps",
+            reserves.r2 / asset2_scaler.into(),
+            market.end,
+            mid_price,
+            market.start,
+            spread
         );
+        tracing::info!("parsing sell order: {}", sell_order1);
+        let sell_order1 = SellOrder::parse_str(&sell_order1)?;
+        let sell_pos1 = sell_order1.into_position(OsRng);
 
-        tracing::trace!(?pos, "opening position");
-        plan = plan.position_open(pos);
+        tracing::trace!(?sell_pos1, "opening sell position");
+        tracing::info!(?sell_pos1, "opening sell position");
+        plan = plan.position_open(sell_pos1);
+
+        let sell_order2 = format!(
+            "{}{}@{}{}/{}bps",
+            reserves.r1 / asset1_scaler.into(),
+            market.start,
+            // the mid price is inverted for the other direction
+            1.0 / mid_price,
+            market.end,
+            spread
+        );
+        tracing::info!("parsing sell order: {}", sell_order2);
+        let sell_order2 = SellOrder::parse_str(&sell_order2)?;
+        let sell_pos2 = sell_order2.into_position(OsRng);
+
+        tracing::trace!(?sell_pos2, "opening sell position");
+        tracing::info!(?sell_pos2, "opening sell position");
+        plan = plan.position_open(sell_pos2);
 
         Ok(())
     }
@@ -417,12 +441,6 @@ where
             .unspent_notes_by_address_and_asset(self.fvk.account_group_id())
             .await?;
 
-        fn is_closed_position_nft(denom: &Denom) -> bool {
-            let prefix = format!("lpnft_closed_");
-
-            denom.starts_with(&prefix)
-        }
-
         // TODO: we query the view server for this too much, maybe
         // we should hang on to it somewhere
         let asset_cache = self.view.assets().await?;
@@ -443,7 +461,7 @@ where
                             }
 
                             (*index == AddressIndex::from(self.account))
-                                && is_closed_position_nft(base_denom.unwrap())
+                                && base_denom.unwrap().is_closed_position_nft()
                         })
                         .map(|record| {
                             asset_cache
@@ -483,12 +501,6 @@ where
             .unspent_notes_by_address_and_asset(self.fvk.account_group_id())
             .await?;
 
-        fn is_opened_position_nft(denom: &Denom) -> bool {
-            let prefix = format!("lpnft_opened_");
-
-            denom.starts_with(&prefix)
-        }
-
         // TODO: we query the view server for this too much, maybe
         // we should hang on to it somewhere
         let asset_cache = self.view.assets().await?;
@@ -509,7 +521,7 @@ where
                             }
 
                             (*index == AddressIndex::from(self.account))
-                                && is_opened_position_nft(base_denom.unwrap())
+                                && base_denom.unwrap().is_opened_position_nft()
                         })
                         .map(|record| {
                             asset_cache
