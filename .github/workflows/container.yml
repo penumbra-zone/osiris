@@ -3,6 +3,11 @@ name: Build container image
 on:
   workflow_call:
   workflow_dispatch:
+    inputs:
+      penumbra_version:
+        description: 'Git ref (e.g. branch or tag) of Penumbra repo for building'
+        default: "main"
+        required: true
   push:
     branches:
       - main
@@ -45,7 +50,9 @@ jobs:
           platforms: linux/amd64
           file: Containerfile
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          tags: ${{ steps.meta.outputs.tags }},${{ inputs.penumbra_version }}
+          build-args: |
+            PENUMBRA_VERSION=${{ inputs.penumbra_version }}
           # We disable layer caching to ensure that the most recent penumbra repo is used.
           # Otherwise, the static git url for the repo will always result in a cache hit.
           # TODO: update with dynamic build-args using e.g. current date to bust cache.
